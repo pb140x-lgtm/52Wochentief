@@ -1,110 +1,101 @@
 // scripts/datensammlung.js
-// Holt Rohdaten von Financial Modeling Prep (FMP) und lässt Claude sie
+// Holt Rohdaten von Yahoo Finance und lässt Claude sie
 // gemäss prompt-datensammlung.md in ein sauberes JSON verwandeln.
-// Benötigt: FMP_API_KEY, ANTHROPIC_API_KEY als Umgebungsvariablen.
+// Benötigt: ANTHROPIC_API_KEY als Umgebungsvariable.
 
 import fs from "fs";
 import path from "path";
+import yahooFinance from "yahoo-finance2";
 
-const FMP_KEY = process.env.FMP_API_KEY;
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 
-if (!FMP_KEY || !ANTHROPIC_KEY) {
-  console.error("FMP_API_KEY oder ANTHROPIC_API_KEY fehlt.");
+if (!ANTHROPIC_KEY) {
+  console.error("ANTHROPIC_API_KEY fehlt.");
   process.exit(1);
 }
 
-// Indizes je Land. WICHTIG: Diese Symbole solltest du gegen deinen FMP-Plan
-// prüfen (nicht jeder Plan deckt alle Indizes ab) und ggf. anpassen.
 const INDIZES = {
-  Japan: "^N225",
-  Korea: "^KS11",
-  China: "^SSEC",
-  Indien: "^NSEI",
-  Singapore: "^STI",
+  Japan:     { symbol: "^N225",  name: "Nikkei 225" },
+  Korea:     { symbol: "^KS11",  name: "KOSPI" },
+  China:     { symbol: "^SSEC",  name: "Shanghai Composite" },
+  Indien:    { symbol: "^NSEI",  name: "Nifty 50" },
+  Singapore: { symbol: "^STI",   name: "Straits Times Index" },
 };
 
-// Grosse Börsen je Land für den Screener. Ebenfalls gegen deinen FMP-Plan
-// prüfen und anpassen (exchangeShortName kann variieren).
-const BOERSEN = {
-  Japan: "JPX",
-  Korea: "KSE",
-  China: "SHH",
-  Indien: "NSE",
-  Singapore: "SGX",
+// Repräsentative Grosskapitalisierungen je Markt (> 10 Mrd. USD Marktkapitalisierung)
+const ASIEN_AKTIEN = {
+  Japan:     ["7203.T", "6758.T", "9984.T", "8306.T", "6861.T", "9432.T", "7974.T", "8035.T", "4519.T", "6501.T"],
+  Korea:     ["005930.KS", "000660.KS", "051910.KS", "035420.KS", "005380.KS", "000270.KS"],
+  China:     ["0700.HK", "9988.HK", "3690.HK", "9618.HK", "1810.HK", "2318.HK", "0941.HK"],
+  Indien:    ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "HINDUNILVR.NS", "ICICIBANK.NS"],
+  Singapore: ["D05.SI", "O39.SI", "U11.SI", "C6L.SI", "Z74.SI"],
 };
-
-async function fmpGet(endpoint) {
-  const url = `https://financialmodelingprep.com/api/v3/${endpoint}${endpoint.includes("?") ? "&" : "?"}apikey=${FMP_KEY}`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    console.warn(`FMP-Anfrage fehlgeschlagen (${res.status}): ${endpoint}`);
-    return null;
-  }
-  return res.json();
-}
 
 async function holeIndexPerformance() {
   const ergebnisse = [];
-  for (const [land, symbol] of Object.entries(INDIZES)) {
-    const daten = await fmpGet(`historical-price-full/${encodeURIComponent(symbol)}?timeseries=25`);
-    const reihe = daten?.historical;
-    if (!reihe || reihe.length < 21) {
-      ergebnisse.push({ land, index: symbol, heute_pct: null, tage5_pct: null, tage20_pct: null });
-      continue;
+  const heute = new Date();
+  const vor30 = new Date(heute);
+  vor30.setDate(heute.getDate() - 30);
+  const period1 = vor30.toISOString().split("T")[0];
+  const period2 = heute.toISOString().split("T")[0];
+
+  for (const [land, { symbol, name }] of Object.entries(INDIZES)) {
+    try {
+      const [quote, history] = await Promise.all([
+        yahooFinance.quote(symbol),
+        yahooFinance.historical(symbol, { period1, period2, interval: "1d" }),
+      ]);
+
+      const aktuell   = quote?.regularMarketPrice ?? null;
+      const heute_pct = quote?.regularMarketChangePercent ?? null;
+      // history ist aufsteigend sortiert (älteste zuerst)
+      const vor5  = history.length >= 6  ? history[history.length - 6].close  : null;
+      const vor20 = history.length >= 21 ? history[history.length - 21].close : null;
+
+      ergebnisse.push({
+        land,
+        index: name,
+        heute_pct:  heute_pct != null ? +heute_pct.toFixed(1) : null,
+        tage5_pct:  (vor5  && aktuell) ? +(((aktuell - vor5)  / vor5)  * 100).toFixed(1) : null,
+        tage20_pct: (vor20 && aktuell) ? +(((aktuell - vor20) / vor20) * 100).toFixed(1) : null,
+      });
+    } catch (err) {
+      console.warn(`Indexfehler ${land} (${symbol}):`, err.message);
+      ergebnisse.push({ land, index: name, heute_pct: null, tage5_pct: null, tage20_pct: null });
     }
-    // FMP liefert neueste zuerst
-    const heute = reihe[0].close;
-    const gestern = reihe[1].close;
-    const vor5 = reihe[5].close;
-    const vor20 = reihe[20].close;
-    ergebnisse.push({
-      land,
-      index: symbol,
-      heute_pct: +(((heute - gestern) / gestern) * 100).toFixed(1),
-      tage5_pct: +(((heute - vor5) / vor5) * 100).toFixed(1),
-      tage20_pct: +(((heute - vor20) / vor20) * 100).toFixed(1),
-    });
   }
   return ergebnisse;
 }
 
 async function holeGrosseBewegungenAsien() {
   const alle = [];
-  for (const [land, exchange] of Object.entries(BOERSEN)) {
-    const treffer = await fmpGet(
-      `stock-screener?marketCapMoreThan=10000000000&exchange=${exchange}&limit=200`
-    );
-    if (!Array.isArray(treffer)) continue;
-    for (const firma of treffer) {
-      const quote = await fmpGet(`quote/${encodeURIComponent(firma.symbol)}`);
-      const veraenderung = quote?.[0]?.changesPercentage;
-      if (veraenderung != null && Math.abs(veraenderung) >= 4) {
-        alle.push({
-          land,
-          unternehmen: firma.companyName,
-          ticker: firma.symbol,
-          veraenderung_pct: +veraenderung.toFixed(1),
-        });
+  for (const [land, symbole] of Object.entries(ASIEN_AKTIEN)) {
+    try {
+      const quotes = await yahooFinance.quote(symbole);
+      const quoteArray = Array.isArray(quotes) ? quotes : [quotes];
+      for (const q of quoteArray) {
+        const veraenderung = q?.regularMarketChangePercent;
+        if (veraenderung != null && Math.abs(veraenderung) >= 4) {
+          alle.push({
+            land,
+            unternehmen: q.shortName || q.longName || q.symbol,
+            ticker: q.symbol,
+            veraenderung_pct: +veraenderung.toFixed(1),
+          });
+        }
       }
+    } catch (err) {
+      console.warn(`Kursfehler ${land}:`, err.message);
     }
   }
   return alle;
 }
 
-async function holeEarningsGestern(nurUSA = false) {
-  const heute = new Date();
-  const gestern = new Date(heute);
-  gestern.setDate(heute.getDate() - 1);
-  const von = gestern.toISOString().split("T")[0];
-  const bis = von;
-  const kalender = await fmpGet(`earning_calendar?from=${von}&to=${bis}`);
-  if (!Array.isArray(kalender)) return [];
-  return kalender.filter((e) => (nurUSA ? true : true)); // Filterung nach Marktkap. erfolgt via Claude-Prompt
-}
-
 async function claudeStrukturieren(rohdaten) {
-  const promptVorlage = fs.readFileSync(path.join(process.cwd(), "scripts/prompt-datensammlung.md"), "utf8");
+  const promptVorlage = fs.readFileSync(
+    path.join(process.cwd(), "scripts/prompt-datensammlung.md"),
+    "utf8"
+  );
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -128,17 +119,15 @@ async function claudeStrukturieren(rohdaten) {
 }
 
 async function main() {
-  const indizes = await holeIndexPerformance();
+  const indizes    = await holeIndexPerformance();
   const bewegungen = await holeGrosseBewegungenAsien();
-  const earningsAsien = await holeEarningsGestern();
-  const earningsUSA = await holeEarningsGestern(true);
 
   const rohdaten = {
-    datum: new Date().toISOString().split("T")[0],
+    datum:                      new Date().toISOString().split("T")[0],
     indizes,
-    grosse_bewegungen_asien: bewegungen,
-    earnings_gestern_asien: earningsAsien,
-    earnings_nachboerslich_usa: earningsUSA,
+    grosse_bewegungen_asien:    bewegungen,
+    earnings_gestern_asien:     [],
+    earnings_nachboerslich_usa: [],
   };
 
   const strukturiert = await claudeStrukturieren(rohdaten);

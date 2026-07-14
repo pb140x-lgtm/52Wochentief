@@ -21,9 +21,11 @@ jobs:
         with:
           node-version: 24
 
+      - name: Abhängigkeiten installieren
+        run: npm install
+
       - name: Datensammlung ausführen
         env:
-          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: node scripts/datensammlung.js
 
