@@ -1,0 +1,8 @@
+{
+  "name": "52wochentief-automation",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  }
+}

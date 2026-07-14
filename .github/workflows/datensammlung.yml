@@ -1,0 +1,36 @@
+name: Datensammlung 5 Uhr
+
+on:
+  schedule:
+    # 03:00 UTC = 05:00 MESZ (Sommerzeit). Im Winter (MEZ) läuft es dann
+    # um 04:00 Uhr Ortszeit. GitHub Actions kennt keine Zeitzonen/DST –
+    # das musst du bei Bedarf im Herbst/Frühjahr manuell um 1h verschieben.
+    - cron: "0 3 * * 1-5"
+  workflow_dispatch: {} # erlaubt manuellen Start zum Testen
+
+permissions:
+  contents: write
+
+jobs:
+  sammeln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Datensammlung ausführen
+        env:
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node scripts/datensammlung.js
+
+      - name: Ergebnis committen
+        run: |
+          git config user.name "52wochentief-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add data/
+          git diff --cached --quiet || git commit -m "Datensammlung $(date -u +%F)"
+          git push

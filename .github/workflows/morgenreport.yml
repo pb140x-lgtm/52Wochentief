@@ -1,0 +1,33 @@
+name: Morgenreport 7 Uhr
+
+on:
+  schedule:
+    # 05:00 UTC = 07:00 MESZ (Sommerzeit), siehe Hinweis in datensammlung.yml
+    - cron: "0 5 * * 1-5"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Morgenreport erzeugen
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node scripts/morgenreport.js
+
+      - name: Report committen
+        run: |
+          git config user.name "52wochentief-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add reports/
+          git diff --cached --quiet || git commit -m "Morgenreport $(date -u +%F)"
+          git push
